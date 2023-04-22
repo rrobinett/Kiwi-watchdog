@@ -2,7 +2,7 @@
 
 ###  kiwi-watchdog:   pings Kiwis and powe cycles them if they don't respond
 
-###    Copyright (C) 2021  Robert S. Robinett
+###    Copyright (C) 2021-2023  Robert S. Robinett
 ###
 ###    This program is free software: you can redistribute it and/or modify
 ###    it under the terms of the GNU General Public License as published by
@@ -17,22 +17,36 @@
 ###    You should have received a copy of the GNU General Public License
 ###    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-### This program uses a Sain brand ethernet controller to control a bank of 8 mechanical relays
+### 4/21/2023:
+### This program controls the relays on a IOTZone web controlled 8 channel relay board bought for $40 from one of the many vendors on ebay:
+###           https://www.ebay.com/itm/123388529835
+### The board is delivered set to ip 192.168.1.166, but it is easy to change it to DHCP
+### Documenation of how to interact with it was very hard to find, but some kind person found the manufacturer in China and posted the manual on github at:
+###           https://github.com/mgx0/ZMRN0808-V5
+
+### This program previously controlled a Sain brand ethernet controller to control a bank of 8 mechanical relays
 ### The Sain controller has a fixed IP address of 192.168.1.4, so the Pi running this program must have a LOCAL path to the that address i.e. IP traffic can't go through a router
 ### So this program needs to run on a Pi attached to the same LAN as the Sain controller and the Pi must be configured 
 ### with an additional IP addresss on eth0 by executing:  'ip address add 192.168.1.xx/24 dev etho'
+### IOTZone board is so superior to the Sain that I don't plan to use it again but left the control function for it in this file.
 
 shopt -s -o nounset          ### bash stops with error if undeclared variable is referenced
 
-declare -r VERSION=0.2
-declare    VERBOSITY=${VERBOSITY-1}     ### default to level 1
-declare -r CMD_NAME=${0##*/}
+declare -r CMD_NAME="${0##*/}"
 declare -r CMD_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+declare CONF_FILE="${CMD_DIR}/${CMD_NAME%.*}.conf"
+if [[ ! -f ${CONF_FILE} ]]; then
+    echo "ERROR: can't find '${CONF_FILE}'"
+    return 1
+fi
+source  ${CONF_FILE}
+
+declare -r VERSION=0.3
+declare    VERBOSITY=${VERBOSITY-0}     ### default to level 0 so that when running as a daemon the program doesn't fill up a file systrem with log messages
 declare -r CMD_PATH="${CMD_DIR}/${CMD_NAME}"
 declare -r CMD_DESCRIPTION="Power Control Watchdog"
 declare -r KIWI_POWER_WAIT_SECS=60           ### How long to wait after powering off a Kiwi before checking if it is back online
-declare -r KIWI_BASE_IP="10.14.70"           ### Append ${KIWI_ID_LIST[x]} to get the IP address of the Kiwi in this list:  e.g. KIWI_ID_LIST[0] => ${KIWI_BASE_IP}.${KIWI_ID_LIST[0]} == 10.14.70.75
-declare -r KIWI_ID_LIST=( 72 73 74 75 76 77 78 )
 declare -r KIWI_POWER_WATCH_DAEMON_PID_FILE=${CMD_DIR}/kiwi-watchdog-daemon.pid
 declare -r KIWI_POWER_WATCH_DAEMON_LOG_FILE=${CMD_DIR}/kiwi-watchdog-daemon.log
 
@@ -139,7 +153,7 @@ function startup_daemon_control()
     esac
 }
 
-#
+# The 8 relay control board is 
 #  URL commands
 # (1) http://admin:12345678@192.168.1.166/relay.cgi?relayon1=on
 # The relay 1 is on.
@@ -150,8 +164,19 @@ function startup_daemon_control()
 # (4) http://admin:12345678@192.168.1.166/state.cgi
 # Get the state of the device.
 # 
+function relay_control()
+{
+    local kiwi=$1          ## 72...78, or 100 = netgear
+    local on_off=$2        ## on or off
+
+    local relay=$(( ${kiwi} - 71 ))
+    curl http://admin:12345678@${RELAY_CONTROL_IP}/relay.cgi?relay${on_off}${relay} > /dev/null 2> /dev/null
+}
+
 
 ########################################
+### This controls the V1.0 relay controller which was very, very stupid and is no longer installed anywhere
+### But I have them in HMB as a last resort backup
 function sain_control() 
 {
     local kiwi=$1          ## 72...78, or 100 = netgear
@@ -198,9 +223,9 @@ function kiwi_watchdog_daemon()
                 [[ ${VERBOSITY} -ge 2 ]] && echo "$(date): 'curl --silent ${kiwi_ip}/status => ${ret_code}, so Kiwi ${kiwi_id} is OK" >> ${KIWI_POWER_WATCH_DAEMON_LOG_FILE} 
             else
                 echo "$(date): ERROR: 'curl --silent ${kiwi_ip}/status' => ${ret_code}, so power cycling Kiwi${kiwi_id} for 10 seconds"  >> ${KIWI_POWER_WATCH_DAEMON_LOG_FILE}
-                sain_control ${kiwi_id} off
+                relay_control ${kiwi_id} on
                 sleep 10
-                sain_control ${kiwi_id} on  
+                relay_control ${kiwi_id} off 
                 ### We won't check this Kiwi again for at least 60 seconds, so no need to wait for it to come alive again
             fi
         done
@@ -293,7 +318,7 @@ function usage()
 
 case ${1--h} in
     -c)
-        sain_control $2 $3
+        relay_control $2 $3
         ;;
     -a)
         spawn_kiwi_watchdog_daemon ${2-0}
